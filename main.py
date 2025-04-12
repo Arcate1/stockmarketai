@@ -1,24 +1,34 @@
 import json
+import re
 import pandas as pd
-import openai
+import cohere
 import matplotlib.pyplot as plt
 import streamlit as st
 import yfinance as yf
-openai.api_key = st.secrets.get("OPENAI_API_KEY", None)
 
-import yfinance as yf
-import matplotlib.pyplot as plt
+# Initialize Cohere client
+co = cohere.Client(st.secrets.get("COHERE_API_KEY", None))
+
+# === Stock-related functions ===
 
 def get_stock_price(ticker):
-    return str(yf.Ticker(ticker).history(period='1y').iloc[-1].Close)
+    try:
+        data = yf.Ticker(ticker).history(period='1y')
+        if data.empty:
+            return f"Error: No data found for ticker '{ticker}'. Please check the symbol."
+        return f"The current stock price of {ticker} is ${data.iloc[-1].Close:.2f}"
+    except Exception as e:
+        return f"Error fetching data for {ticker}: {str(e)}"
 
 def calculate_SMA(ticker, window):
     data = yf.Ticker(ticker).history(period='1y').Close
-    return str(data.rolling(window=window).mean().iloc[-1])
+    sma = data.rolling(window=window).mean().iloc[-1]
+    return f"The {window}-day SMA for {ticker} is ${sma:.2f}"
 
 def calculate_EMA(ticker, window):
     data = yf.Ticker(ticker).history(period='1y').Close
-    return str(data.ewm(span=window, adjust=False).mean().iloc[-1])
+    ema = data.ewm(span=window, adjust=False).mean().iloc[-1]
+    return f"The {window}-day EMA for {ticker} is ${ema:.2f}"
 
 def calculate_RSI(ticker):
     data = yf.Ticker(ticker).history(period='1y').Close
@@ -28,194 +38,92 @@ def calculate_RSI(ticker):
     ema_up = up.ewm(com=14-1, adjust=False).mean()
     ema_down = down.ewm(com=14-1, adjust=False).mean()
     rs = ema_up / ema_down
-    return str(100 - (100 / (1 + rs)).iloc[-1])
+    rsi = 100 - (100 / (1 + rs)).iloc[-1]
+    return f"The RSI for {ticker} is {rsi:.2f}"
 
 def calculate_MACD(ticker):
     data = yf.Ticker(ticker).history(period='1y').Close
     short_EMA = data.ewm(span=12, adjust=False).mean()
     long_EMA = data.ewm(span=26, adjust=False).mean()
-    MACD = short_EMA - long_EMA
-    signal = MACD.ewm(span=9, adjust=False).mean()
-    MACD_histogram = MACD - signal
-    return f'{MACD[-1]}, {signal[-1]}, {MACD_histogram[-1]}'
+    macd = short_EMA - long_EMA
+    signal = macd.ewm(span=9, adjust=False).mean()
+    histogram = macd - signal
+    return f"The MACD for {ticker} is {macd.iloc[-1]:.2f}, Signal: {signal.iloc[-1]:.2f}, Histogram: {histogram.iloc[-1]:.2f}"
 
 def plot_stock_price(ticker):
     data = yf.Ticker(ticker).history(period='1y')
-    plt.figure(figsize=(10, 5))
-    plt.plot(data.index, data.Close)
-    plt.title(f'{ticker} Stock Price Over Last Year')
-    plt.xlabel('Date')
-    plt.ylabel('Stock Price ($)')
-    plt.grid(True)
-    plt.savefig('stock.png')
-    plt.close()
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(data.index, data.Close, label='Close Price')
+    ax.set_title(f'{ticker} Stock Price Over Last Year')
+    ax.set_xlabel('Date')
+    ax.set_ylabel('Price ($)')
+    ax.grid(True)
+    ax.legend()
+    return fig
 
-functions = [
-    {
-        "name": "get_stock_price",
-        "description": "Gets the latest stock price given the ticker symbol of a company.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ticker": {
-                    "type": "string",
-                    "description": "The stock ticker symbol for a company (for example AAPL for Apple)."
-                }
-            },
-            "required": ["ticker"]
-        }
-    },
-    {
-        "name": "calculate_SMA",
-        "description": "Calculate the simple moving average for a given stock ticker and a window.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ticker": {
-                    "type": "string",
-                    "description": "The stock ticker symbol for a company (e.g., AAPL for Apple)"
-                },
-                "window": {
-                    "type": "integer",
-                    "description": "The timeframe to consider when calculating the SMA"
-                }
-            },
-            "required": ["ticker", "window"]
-        }
-    },
-    {
-        "name": "calculate_EMA",
-        "description": "Calculate the EMA for a given stock ticker and a window.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ticker": {
-                    "type": "string",
-                    "description": "The stock ticker symbol for a company (e.g., AAPL for Apple)"
-                },
-                "window": {
-                    "type": "integer",
-                    "description": "The timeframe to consider when calculating the EMA"
-                }
-            },
-            "required": ["ticker", "window"]
-        }
-    },
-    {
-        "name": "calculate_RSI",
-        "description": "Calculate the RSI for a given stock ticker and a window.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ticker": {
-                    "type": "string",
-                    "description": "The stock ticker symbol for a company (e.g., AAPL for Apple)"
-                },
-                "window": {
-                    "type": "integer"
-                }
-            },
-            "required": ["ticker", "window"]
-        }
-    },
-    {
-        "name": "calculate_MACD",
-        "description": "Calculate the MACD for a given stock ticker.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ticker": {
-                    "type": "string",
-                    "description": "The stock ticker symbol for a company (e.g., AAPL for Apple)"
-                }
-            },
-            "required": ["ticker"]
-        }
-    },
-    {
-        "name": "plot_stock_price",
-        "description": "Plot the stock price for the last year given the ticker symbol of a company.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "ticker": {
-                    "type": "string",
-                    "description": "The stock ticker symbol for a company (e.g., AAPL for Apple)"
-                }
-            },
-            "required": ["ticker"]
-        }
+# === Command Parsing ===
+
+def parse_user_command(input_text):
+    patterns = {
+        'get_stock_price': r"(?i)stock price of (\w+)",
+        'calculate_SMA': r"(?i)(\d+)[- ]?day SMA of (\w+)",
+        'calculate_EMA': r"(?i)(\d+)[- ]?day EMA of (\w+)",
+        'calculate_RSI': r"(?i)RSI of (\w+)",
+        'calculate_MACD': r"(?i)MACD (?:for|of) (\w+)",
+        'plot_stock_price': r"(?i)plot.*?(\w+)"
     }
-]
 
-available_functions = {
-    "get_stock_price": get_stock_price,
-    "calculate_SMA": calculate_SMA,
-    "calculate_EMA": calculate_EMA,
-    "calculate_RSI": calculate_RSI,
-    "calculate_MACD": calculate_MACD,
-    "plot_stock_price": plot_stock_price
-}
+    for func, pattern in patterns.items():
+        match = re.search(pattern, input_text)
+        if match:
+            if func in ['calculate_SMA', 'calculate_EMA']:
+                return func, {'window': int(match.group(1)), 'ticker': match.group(2).upper()}
+            else:
+                return func, {'ticker': match.group(1).upper()}
+    return None, None
+
+# === Streamlit App UI ===
 
 if 'messages' not in st.session_state:
     st.session_state['messages'] = []
 
-st.title('Stock Analysis Chatbot Assistant')
+st.title('📊 Stock Analysis Chatbot Assistant')
+
+example_questions = [
+    "What’s the stock price of AAPL?",
+    "What is the 50-day SMA of AAPL?",
+    "What is the RSI of AMZN?",
+    "Show me the MACD for META.",
+    "Plot the stock price of AAPL."
+]
 
 user_input = st.text_input('Your input:')
 
+st.markdown("### 💡 Try one of these:")
+for question in example_questions:
+    if st.button(question):
+        user_input = question
+
+# === Main Logic ===
+
 if user_input:
-    try:
-        st.session_state['messages'].append({'role': 'user', 'content': f'{user_input}'})
+    st.session_state['messages'].append({'role': 'user', 'content': user_input})
+    func_name, args = parse_user_command(user_input)
 
-        response = openai.ChatCompletion.create(
-            model='gpt-3.5-turbo',
-            messages=st.session_state['messages'],
-            functions=functions,
-            function_call='auto'
-        )
-
-        response_message = response['choices'][0]['message']
-
-        if response_message.get('function_call'):
-            function_name = response_message['function_call']['name']
-            function_args = json.loads(response_message['function_call']['arguments'])
-
-            if function_name in ['get_stock_price', 'calculate_RSI', 'calculate_MACD', 'plot_stock_price']:
-                args_dict = {'ticker': function_args.get('ticker')}
-            elif function_name in ['calculate_SMA', 'calculate_EMA']:
-                args_dict = {'ticker': function_args.get('ticker'), 'window': function_args.get('window')}
-
-            function_to_call = available_functions[function_name]
-            function_response = function_to_call(**args_dict)
-
-            if function_name == 'plot_stock_price':
-                st.image('stock.png')
-            else:
-                st.session_state['messages'].append(response_message)
-                st.session_state['messages'].append({
-                    'role': 'function',
-                    'name': function_name,
-                    'content': function_response
-                })
-
-                second_response = openai.ChatCompletion.create(
-                    model='gpt-3.5-turbo-0613',
-                    messages=st.session_state['messages']
-                )
-
-                st.text(second_response['choices'][0]['message']['content'])
-                st.session_state['messages'].append({
-                    'role': 'assistant',
-                    'content': second_response['choices'][0]['message']['content']
-                })
-
+    if func_name:
+        if func_name == 'plot_stock_price':
+            fig = plot_stock_price(**args)
+            st.pyplot(fig)  # Directly render the plot
+            st.success(f"Here's the stock price chart for {args['ticker']}.")
         else:
-            st.text(response_message['content'])
-            st.session_state['messages'].append({
-                'role': 'assistant',
-                'content': response_message['content']
-            })
-
-    except Exception as e:
-        st.text(f'Error occurred: {str(e)}')
+            result = globals()[func_name](**args)
+            st.success(result)
+    else:
+        # fallback to Cohere chat
+        response = co.chat(
+            message=user_input,
+            conversation_id="stock-chat",
+            temperature=0.5
+        )
+        st.success(response.text)
+        st.session_state['messages'].append({'role': 'assistant', 'content': response.text})
